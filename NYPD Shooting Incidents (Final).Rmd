@@ -1,0 +1,634 @@
+---
+title: "Shootings in NYC"
+output:
+  pdf_document: default
+  html_document: default
+date: "3/30/2023"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Abstract
+
+This report aims to study the change in relationships and trends of shooting incidents in NYC over time.
+
+Is there a relationship between time of day and shooting frequency? Has that relationship changed over time? Does that relationship change based on distance?
+
+You hear it in the news and are probably told by authority figures that after a certain time of the day, you proobably want to be at home. Has that changed over the years? Has NYC seen more gun violence in the later hours of the day?
+
+Acknowledging my personal bias that there has not been a significant change in shooting frequency at each hour of the day, I will scrutinize the data from the view point of someone who wants to showcase a change in shooting frequency.
+
+To study the trends over time I will compare the frequency of shooting from the most recent 5 years with the preceding 5 years (5 years before the last 5 years).
+
+## Importing Data
+
+Data is NYPD Shooting Incident Data (Historic), published by the City of New York and hosted on data.gov.
+
+Each row of data is a seperate shooting incident.
+
+The last update to the data was on September 2, 2023.
+
+```{r import}
+library(tidyverse)
+url = 'https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD'
+df = read_csv(url)
+
+summary(df)
+```
+
+## Tidying Data
+
+Transforming data prior to further analysis.
+
+Number of unique values in each column:
+
+-   This is helpful for determining which columns are important categorical variables vs unique identifiers.
+
+```{r unique_val_col}
+library(tidyverse)
+library(dplyr)
+
+df %>%
+  summarise_all(n_distinct)
+```
+
+Number of null values in each column:
+
+```{r null_cols}
+df %>%
+  summarise_all(~sum(is.na(.))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rename(Null_Count = V1) %>%
+  arrange(Null_Count)
+```
+
+Dropping Out-of-Scope Columns
+
+For this project, the only columns we will start our analysis with are the date, time, longitude, and latitude.
+
+Please see further information regarding each column.
+
+-   Location and other coordinate based columns are missing a lot of data and will not be used in this project. Longitude and Latitude will be kept for further spatial analysis.
+
+-   Boro, jurisdiction code, and precinct are all columns that provide spatial information, however, I will be enriching the data using miles to dowwntown Manhattan using the longitude and latitude coordinate points.
+
+-   Perpetrator columns are missing 9,310 values. For this project, perpetrator information is out of scope, however, this is a potential exploration path for further investigation regarding perpetrator profiling after dropping missing values.
+
+-   The victim columns appear complete, however, out of scope for this project.
+
+-   The incident key column appears to be an unique identifier used to enrich the data through another data set. That is out of scope for this project.
+
+-   The statistical murder flag is another interesting column that invites further exploration of analysis. For this project, however, it is out of scope.
+
+```{r drop_cols}
+df = df %>%
+  select(OCCUR_DATE,OCCUR_TIME,Latitude,Longitude)
+```
+
+10 Shooting Cases missing Longitude/Latitude
+
+-   These will have to be dropped since we do not have a method of filling in implied/assumed data points.
+
+-   10 Cases is a fraction of a percent and will not have impact on the analysis.
+
+```{r missing_lon_lat}
+print(sum(is.na(df$Longitude)) / nrow(df))
+
+
+df = df %>%
+  filter(!is.na(Longitude))
+```
+
+Feature Engineering
+
+Modifying the Population of Data
+
+-   Create a new column called RECENT_FLAG. This will have a 1 if the case was from the last 5 years and a 0 if it was from the 5 years before the last 5 years. Any cases older than 10 years will be dropped.
+
+```{r recent_flag}
+library(lubridate)
+
+df = df %>%
+  mutate(
+    OCCUR_DATE = mdy(OCCUR_DATE),
+    RECENT_FLAG = case_when(
+      year(OCCUR_DATE) >= 2018 ~ 1,
+      between(year(OCCUR_DATE), 2013, 2017) ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  filter(!is.na(RECENT_FLAG))
+```
+
+Modifying Date column
+
+-   While further analysis at a more granular level may require the full date, my project will analyze the shootings at a monthly scope.
+
+```{r date_mod}
+df = df %>%
+  mutate(
+    OCCUR_YEAR = year(OCCUR_DATE),
+    OCCUR_MONTH = month(OCCUR_DATE)
+  )
+
+df = df %>%
+  mutate(
+    OCCUR_DATE = OCCUR_YEAR * 100 + OCCUR_MONTH
+  ) %>%
+  select(-OCCUR_YEAR, -OCCUR_MONTH)
+```
+
+Cyclical Encoding Time
+
+-   Time columns must be cyclically encoded as the time 24 is close to the time 1, but will not be treated that way in any regression analysis. Without proper encoding any analysis will assume those times are far from each other.
+
+-   When visualizing volume per time, non cyclical Time is okay as it is a categorical value. This project will analyze shootings at an hourly basis, and therefore, drop the minutes and seconds.
+
+```{r encode_time}
+library(ggplot2)
+
+df = df %>%
+  mutate(OCCUR_TIME = as.integer(substr(OCCUR_TIME, 1, 2)))
+
+df = df %>%
+  mutate(
+    sin_Time = sin(2 * pi * OCCUR_TIME / 24),
+    cos_Time = cos(2 * pi * OCCUR_TIME / 24)
+  )
+
+ggplot(df, aes(x = sin_Time, y = cos_Time)) +
+  geom_point() +
+  xlab("sin(Time)") +
+  ylab("cos(Time)") +
+  ggtitle("Scatter plot of sin(Time) vs cos(Time)")
+```
+
+Creating a TIME Group
+
+-   While the cyclical encoded time can be used to examine the regression based relationship between time and frequency of shooting, I will create 4 groups of 6 hours as a categorical variable to examine the differences in mean and proportions.
+
+```{r time_grp}
+
+df$TIME = ifelse((df$OCCUR_TIME >= 22 | (df$OCCUR_TIME >= 0 & df$OCCUR_TIME < 4)), 'Night',
+                  ifelse((df$OCCUR_TIME >= 4 & df$OCCUR_TIME < 10), 'Morning',
+                         ifelse((df$OCCUR_TIME >= 10 & df$OCCUR_TIME < 16), 'Noon',
+                                ifelse((df$OCCUR_TIME >= 16 & df$OCCUR_TIME < 22), 'Evening',
+                                       'ERROR'))))
+
+table(df$TIME)
+
+```
+
+Distance to downtown Manhattan
+
+-   Leveraging the Haversine distance formula, we will explore the distance between the shooting event and downtown Manhattan.
+
+```{r haversince_distance}
+deg2rad = function(degrees) {
+  radians = degrees * (pi / 180)
+  return(radians)
+}
+
+haversine_distance = function(lat1, lon1, lat2, lon2) {
+  lat1 = deg2rad(lat1)
+  lon1 = deg2rad(lon1)
+  lat2 = deg2rad(lat2)
+  lon2 = deg2rad(lon2)
+  
+  dlon = lon2 - lon1
+  dlat = lat2 - lat1
+  a = sin(dlat/2)^2 + cos(lat1) * cos(lat2) * sin(dlon/2)^2
+  c = 2 * asin(sqrt(a))
+  distance = 3963.0 * c  
+  
+  return(distance)
+}
+
+manhattan_lat = 40.720259
+manhattan_lon = -74.000772
+
+df = df %>%
+  mutate(Distance_Downtown = haversine_distance(manhattan_lat, manhattan_lon, Latitude, Longitude)) %>%
+  select(-Latitude, -Longitude)
+
+```
+
+Creating a DISTANCE Group
+
+-   While the miles away from downtown can be used to examine the regression based relationship between distance and frequency of shooting, I will create 3 groups of distances as a categorical variable to examine the differences in mean and proportions.
+
+```{r dist_grp}
+
+dist_bin = c(0, 5, 10, Inf) 
+dist_labels = c('Close', 'Mid', 'Far')
+
+df$DISTANCE = cut(df$Distance_Downtown, breaks = dist_bin, labels = dist_labels, right = FALSE)
+
+```
+
+## Visualyzing and Analyzing Data
+
+Starting off, lets explore with a simple "heatmap" to examine the most popular time of day and distance grouping for shooting frequency. It appears that the Night and Evening medium distance away from downtown Manhattan are the most frequent. Is that distinction between medium distance and the other distances visibile in other visualizations?
+
+```{r heatplot}
+library(ggplot2)
+
+ggplot(df, aes(x = TIME, fill = DISTANCE)) +
+  geom_bar(position = "dodge", color = "black") +
+  labs(x = "Time", y = "Count", fill = "Distance from downtown") +
+  ggtitle("Distribution of Shootings by Time and Distance")
+
+```
+
+Volume of shooting at each time of the day
+
+These plots are read like a 24 hour clock. Imagine if a normal clock had 24 indice markers instead of 12. The top center of the clock is midnight and the bottom center of the clock is noon.
+
+-   Additional Question for Further Investigation: Are there differences in the proportions of shootings at each time sector of the day? This will be further explored in the modeling section.
+
+```{r clock_shootings_plot}
+all_dist = df %>%
+  group_by(OCCUR_TIME, sin_Time, cos_Time) %>%
+  summarise(Shooting = n(),.groups = 'drop') %>%
+  ungroup()
+ggplot(all_dist, aes(x = sin_Time, y = cos_Time, color = Shooting)) +
+  geom_point() +
+  scale_color_gradientn(colors = c("blue", "white", "red")) +
+  labs(x = "sin_Time", y = "cos_Time", color = "Shooting") +
+  ggtitle("Total Shootings throughout the day")
+
+close_dist = df %>%
+  filter(DISTANCE == "Close") %>%
+  group_by(OCCUR_TIME, sin_Time, cos_Time) %>%
+  summarise(Shooting = n(),.groups = 'drop') %>%
+  ungroup()
+ggplot(close_dist, aes(x = sin_Time, y = cos_Time, color = Shooting)) +
+  geom_point() +
+  scale_color_gradientn(colors = c("blue", "white", "red")) +
+  labs(x = "sin_Time", y = "cos_Time", color = "Shooting") +
+  ggtitle("Total Shootings close to DT Manhattan throughout the day")
+
+mid_dist = df %>%
+  filter(DISTANCE == "Mid") %>%
+  group_by(OCCUR_TIME, sin_Time, cos_Time) %>%
+  summarise(Shooting = n(),.groups = 'drop') %>%
+  ungroup()
+ggplot(mid_dist, aes(x = sin_Time, y = cos_Time, color = Shooting)) +
+  geom_point() +
+  scale_color_gradientn(colors = c("blue", "white", "red")) +
+  labs(x = "sin_Time", y = "cos_Time", color = "Shooting") +
+  ggtitle("Total Shootings medium distance to DT Manhattan throughout the day")
+
+far_dist = df %>%
+  filter(DISTANCE == "Far") %>%
+  group_by(OCCUR_TIME, sin_Time, cos_Time) %>%
+  summarise(Shooting = n(),.groups = 'drop') %>%
+  ungroup()
+ggplot(far_dist, aes(x = sin_Time, y = cos_Time, color = Shooting)) +
+  geom_point() +
+  scale_color_gradientn(colors = c("blue", "white", "red")) +
+  labs(x = "sin_Time", y = "cos_Time", color = "Shooting") +
+  ggtitle("Total Shootings far from DT Manhattan throughout the day")
+```
+
+Volume of shooting at each time of the day (Recent 5Y vs Preceding 5Y)
+
+Are there more shootings at certain times of the day in the most recent 5 years compared to the preceding 5 years?
+
+-   Additional Question for Further Investigation: Each distance looks to have a similar pattern where there are more shootings recently at night than there were in the preceding 5 years. The monthly mean shootings at each time and distance to downtown will be compared between recent 5 years and preceding 5 years to test for differences.
+
+```{r shooting_distance_time}
+all_dist_t = df %>%
+  group_by(OCCUR_TIME, RECENT_FLAG) %>%
+  summarise(Shooting = n(),.groups = 'drop') %>%
+  ungroup()
+ggplot(all_dist_t, aes(x = OCCUR_TIME, y = Shooting, color = factor(RECENT_FLAG))) +
+  geom_point() +
+  labs(x = "OCCUR_TIME", y = "Shooting", color = "RECENT_FLAG") +
+  ggtitle("Shootings at each Hour of the Day")
+
+close_dist_t = df %>%
+  filter(DISTANCE == "Close") %>%
+  group_by(OCCUR_TIME, RECENT_FLAG) %>%
+  summarise(Shooting = n(),.groups = 'drop') %>%
+  ungroup()
+ggplot(close_dist_t, aes(x = OCCUR_TIME, y = Shooting, color = factor(RECENT_FLAG))) +
+  geom_point() +
+  labs(x = "OCCUR_TIME", y = "Shooting", color = "RECENT_FLAG") +
+  ggtitle("Shootings close to DT Manhattan at each Hour of the Day")
+
+mid_dist_t = df %>%
+  filter(DISTANCE == "Mid") %>%
+  group_by(OCCUR_TIME, RECENT_FLAG) %>%
+  summarise(Shooting = n(),.groups = 'drop') %>%
+  ungroup()
+ggplot(mid_dist_t, aes(x = OCCUR_TIME, y = Shooting, color = factor(RECENT_FLAG))) +
+  geom_point() +
+  labs(x = "OCCUR_TIME", y = "Shooting", color = "RECENT_FLAG") +
+  ggtitle("Shootings medium distance to DT Manhattan at each Hour of the Day")
+
+far_dist_t = df %>%
+  filter(DISTANCE == "Far") %>%
+  group_by(OCCUR_TIME, RECENT_FLAG) %>%
+  summarise(Shooting = n(),.groups = 'drop') %>%
+  ungroup()
+ggplot(far_dist_t, aes(x = OCCUR_TIME, y = Shooting, color = factor(RECENT_FLAG))) +
+  geom_point() +
+  labs(x = "OCCUR_TIME", y = "Shooting", color = "RECENT_FLAG") +
+  ggtitle("Shootings far from DT Manhattan at each Hour of the Day")
+```
+
+Delta of the volume of shootings at each time of the day (Recent 5Y vs Preceding 5Y)
+
+This graph explores the differences in delta of shooting volume at each time of the day across the various distances to downtown. We will further explore if these differences are greater than 0 in the modeling section.
+
+```{r delta_shooting_time}
+delta_all = df %>%
+  group_by(OCCUR_TIME, RECENT_FLAG) %>%
+  summarise(index_count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = RECENT_FLAG, values_from = index_count) %>%
+  mutate(Delta = `1` - `0`) %>%
+  ungroup()
+ggplot(delta_all, aes(x = OCCUR_TIME, y = Delta)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(x = "OCCUR_TIME", y = "Delta", title = "Shootings difference in recent 5Y and preceding 5Y")
+
+delta_close = df %>%
+  filter(DISTANCE == "Close") %>%
+  group_by(OCCUR_TIME, RECENT_FLAG) %>%
+  summarise(index_count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = RECENT_FLAG, values_from = index_count) %>%
+  mutate(Delta = `1` - `0`) %>%
+  ungroup()
+ggplot(delta_close, aes(x = OCCUR_TIME, y = Delta)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(x = "OCCUR_TIME", y = "Delta", title = "Shootings close to DT Manhattan in recent 5Y and preceding 5Y")
+
+delta_mid = df %>%
+  filter(DISTANCE == "Mid") %>%
+  group_by(OCCUR_TIME, RECENT_FLAG) %>%
+  summarise(index_count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = RECENT_FLAG, values_from = index_count) %>%
+  mutate(Delta = `1` - `0`) %>%
+  ungroup()
+ggplot(delta_mid, aes(x = OCCUR_TIME, y = Delta)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(x = "OCCUR_TIME", y = "Delta", title = "Shootings medium distance to DT Manhattan in recent 5Y and preceding 5Y")
+
+delta_far = df %>%
+  filter(DISTANCE == "Far") %>%
+  group_by(OCCUR_TIME, RECENT_FLAG) %>%
+  summarise(index_count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = RECENT_FLAG, values_from = index_count) %>%
+  mutate(Delta = `1` - `0`) %>%
+  ungroup()
+ggplot(delta_far, aes(x = OCCUR_TIME, y = Delta)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(x = "OCCUR_TIME", y = "Delta", title = "Shootings far from DT Manhattan in recent 5Y and preceding 5Y")
+
+```
+
+## Modeling Data
+
+Linear Regression: Distance to Downtown Manhattan and Shooting Volume Multivariate Linear Regression model fit for cos and sin Time of Day and Shooting Volume using data from the recent 5 years.
+
+```{r recent_time_model}
+recent_data = df %>%
+  filter(RECENT_FLAG == 1) %>%
+  group_by(sin_Time, cos_Time) %>%
+  summarise(Shootings = n(), .groups = 'drop') %>%
+  ungroup()
+
+linear_model = lm(Shootings ~ sin_Time + cos_Time, data = recent_data)
+
+summary(linear_model)
+```
+
+Multivariate Linear Regression model fit for cos and sin Time of Day and Shooting Volume using data from the preceding 5 years.
+
+```{r preced_time_model}
+preceding_data = df %>%
+  filter(RECENT_FLAG == 0) %>%
+  group_by(sin_Time, cos_Time) %>%
+  summarise(Shootings = n(), .groups = 'drop') %>%
+  ungroup()
+
+linear_model_2 = lm(Shootings ~ sin_Time + cos_Time, data = preceding_data)
+
+summary(linear_model_2)
+```
+
+Now we will explore the difference in means and proportions in shooting frequency at the time of the day between the last 5 years and the preceding 5 years. The chi-squared goodness of fit test will be used to compare the underlying distribution of shooting frequency between each Time Groups. We will compare the proportions for shootings all distance to DT Manhattan, Close, Medium, and Far to see if there is variation between shooting distribution over distance and time of day.
+
+Then we will perform Z tests to identify if the mean monthly shooting average has changed from the preceding 5 years. Again, we will compare the mean monthly shootings for all distances, close, medium, and far from downtown.
+
+Starting with difference in proportions and mean monthly shootings for ALL distances.
+
+```{r porportions_mean_difference}
+library(dplyr)
+library(BSDA)
+recent_group = df %>%
+  filter(RECENT_FLAG == 1) %>%
+  group_by(OCCUR_DATE, TIME) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = TIME, values_from = count, values_fill = 0)
+
+preced_group = df %>%
+  filter(RECENT_FLAG == 0) %>%
+  group_by(OCCUR_DATE, TIME) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = TIME, values_from = count, values_fill = 0)
+
+observed_freq_1 = colSums(recent_group[, -1]) 
+observed_freq_0 = colSums(preced_group[, -1])
+bind = merge(data.frame(observed_freq_1),data.frame(observed_freq_0), by = "row.names")[,-1]
+result = chisq.test(bind, correct = FALSE)
+
+print(result)
+
+
+merged_df <- merge(data.frame(observed_freq_1),data.frame(observed_freq_0), by = "row.names")
+names(merged_df) <- c("Time_of_Day", "Recent_5Y", "Preceding_5Y")
+merged_df = tidyr::pivot_longer(merged_df, cols = c(`Recent_5Y`, `Preceding_5Y`), names_to = "Category", values_to = "Observation")
+merged_df$Time_of_Day <- as.character(merged_df$Time_of_Day)
+ggplot(merged_df, aes(x = Time_of_Day, y = Observation, fill = Category)) +
+  geom_col(position = "dodge") +
+  labs(x = "Time of Day", y = "Observation Count", fill = NULL) +
+  ggtitle("Observations in Recent 5Y vs. Preceding 5Y") +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  scale_fill_manual(values = c("Recent_5Y" = "blue", "Preceding_5Y" = "red"))
+
+
+
+for (time in colnames(recent_group[, -1])) {
+  z_stat = z.test(recent_group[[time]], preced_group[[time]], sigma.x = sd(recent_group[[time]]), sigma.y = sd(preced_group[[time]]))$statistic
+  p_value = z.test(recent_group[[time]], preced_group[[time]], sigma.x = sd(recent_group[[time]]), sigma.y = sd(preced_group[[time]]))$p.value
+  
+  cat("\nZ-test for mean shootings per month in the", time, "between recent 5Y and Preceding 5Y:\n")
+  cat("Recent 5Y Mean:", mean(recent_group[[time]]), "\n")
+  cat("Preceding 5Y Mean:", mean(preced_group[[time]]), "\n")
+  cat("Z-statistic:", z_stat, "\n")
+  cat("P-value:", p_value, "\n")
+}
+
+```
+
+Next, lets explore the difference in proportions and mean monthly shootings for close to DT.
+
+```{r porportions_mean_difference_close}
+recent_close = df %>%
+  filter(RECENT_FLAG == 1, DISTANCE == 'Close') %>%
+  group_by(OCCUR_DATE, TIME) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = TIME, values_from = count, values_fill = 0)
+
+preced_close = df %>%
+  filter(RECENT_FLAG == 0, DISTANCE == 'Close') %>%
+  group_by(OCCUR_DATE, TIME) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = TIME, values_from = count, values_fill = 0)
+
+observed_freq_1 = colSums(recent_close[, -1]) 
+observed_freq_0 = colSums(preced_close[, -1])
+bind = merge(data.frame(observed_freq_1),data.frame(observed_freq_0), by = "row.names")[,-1]
+result2 = chisq.test(bind, correct = FALSE)
+
+print(result2)
+
+merged_df <- merge(data.frame(observed_freq_1),data.frame(observed_freq_0), by = "row.names")
+names(merged_df) <- c("Time_of_Day", "Recent_5Y", "Preceding_5Y")
+merged_df = tidyr::pivot_longer(merged_df, cols = c(`Recent_5Y`, `Preceding_5Y`), names_to = "Category", values_to = "Observation")
+merged_df$Time_of_Day <- as.character(merged_df$Time_of_Day)
+ggplot(merged_df, aes(x = Time_of_Day, y = Observation, fill = Category)) +
+  geom_col(position = "dodge") +
+  labs(x = "Time of Day", y = "Observation Count", fill = NULL) +
+  ggtitle("Observations in Recent 5Y vs. Preceding 5Y Close to Downtown") +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  scale_fill_manual(values = c("Recent_5Y" = "blue", "Preceding_5Y" = "red"))
+
+for (time in colnames(recent_close[, -1])) {
+  z_stat = z.test(recent_close[[time]], preced_close[[time]], sigma.x = sd(recent_close[[time]]), sigma.y = sd(preced_close[[time]]))$statistic
+  p_value = z.test(recent_close[[time]], preced_close[[time]], sigma.x = sd(recent_close[[time]]), sigma.y = sd(preced_close[[time]]))$p.value
+  
+  cat("\nZ-test for mean shootings Close to DT per month in the", time, "between recent 5Y and Preceding 5Y:\n")
+  cat("Recent 5Y Mean:", mean(recent_close[[time]]), "\n")
+  cat("Preceding 5Y Mean:", mean(preced_close[[time]]), "\n")
+  cat("Z-statistic:", z_stat, "\n")
+  cat("P-value:", p_value, "\n")
+}
+
+```
+
+Next lets explore the difference in proportions and mean monthly shootings for medium distances to DT.
+
+```{r porportions_mean_difference_mid}
+recent_mid = df %>%
+  filter(RECENT_FLAG == 1, DISTANCE == 'Mid') %>%
+  group_by(OCCUR_DATE, TIME) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = TIME, values_from = count, values_fill = 0)
+
+preced_mid = df %>%
+  filter(RECENT_FLAG == 0, DISTANCE == 'Mid') %>%
+  group_by(OCCUR_DATE, TIME) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = TIME, values_from = count, values_fill = 0)
+observed_freq_1 = colSums(recent_mid[, -1]) 
+observed_freq_0 = colSums(preced_mid[, -1])
+bind = merge(data.frame(observed_freq_1),data.frame(observed_freq_0), by = "row.names")[,-1]
+result3 = chisq.test(bind, correct = FALSE)
+
+print(result3)
+
+merged_df <- merge(data.frame(observed_freq_1),data.frame(observed_freq_0), by = "row.names")
+names(merged_df) <- c("Time_of_Day", "Recent_5Y", "Preceding_5Y")
+merged_df = tidyr::pivot_longer(merged_df, cols = c(`Recent_5Y`, `Preceding_5Y`), names_to = "Category", values_to = "Observation")
+merged_df$Time_of_Day <- as.character(merged_df$Time_of_Day)
+ggplot(merged_df, aes(x = Time_of_Day, y = Observation, fill = Category)) +
+  geom_col(position = "dodge") +
+  labs(x = "Time of Day", y = "Observation Count", fill = NULL) +
+  ggtitle("Observations in Recent 5Y vs. Preceding 5Y Medium distance to Downtown") +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  scale_fill_manual(values = c("Recent_5Y" = "blue", "Preceding_5Y" = "red"))
+
+for (time in colnames(recent_mid[, -1])) {
+  z_stat = z.test(recent_mid[[time]], preced_mid[[time]], sigma.x = sd(recent_mid[[time]]), sigma.y = sd(preced_mid[[time]]))$statistic
+  p_value = z.test(recent_mid[[time]], preced_mid[[time]], sigma.x = sd(recent_mid[[time]]), sigma.y = sd(preced_mid[[time]]))$p.value
+  
+  cat("\nZ-test for mean shootings Medium distances to DT per month in the", time, "between recent 5Y and Preceding 5Y:\n")
+  cat("Recent 5Y Mean:", mean(recent_close[[time]]), "\n")
+  cat("Preceding 5Y Mean:", mean(preced_close[[time]]), "\n")
+  cat("Z-statistic:", z_stat, "\n")
+  cat("P-value:", p_value, "\n")
+}
+
+```
+
+Finally, lets explore the difference in proportions and mean monthly shootings far from DT.
+
+```{r porportions_mean_difference_far}
+recent_far = df %>%
+  filter(RECENT_FLAG == 1, DISTANCE == 'Far') %>%
+  group_by(OCCUR_DATE, TIME) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = TIME, values_from = count, values_fill = 0)
+
+preced_far = df %>%
+  filter(RECENT_FLAG == 0, DISTANCE == 'Far') %>%
+  group_by(OCCUR_DATE, TIME) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = TIME, values_from = count, values_fill = 0)
+observed_freq_1 = colSums(recent_far[, -1]) 
+observed_freq_0 = colSums(preced_far[, -1])
+bind = merge(data.frame(observed_freq_1),data.frame(observed_freq_0), by = "row.names")[,-1]
+result4 = chisq.test(bind, correct = FALSE)
+
+print(result4)
+
+merged_df <- merge(data.frame(observed_freq_1),data.frame(observed_freq_0), by = "row.names")
+names(merged_df) <- c("Time_of_Day", "Recent_5Y", "Preceding_5Y")
+merged_df = tidyr::pivot_longer(merged_df, cols = c(`Recent_5Y`, `Preceding_5Y`), names_to = "Category", values_to = "Observation")
+merged_df$Time_of_Day <- as.character(merged_df$Time_of_Day)
+ggplot(merged_df, aes(x = Time_of_Day, y = Observation, fill = Category)) +
+  geom_col(position = "dodge") +
+  labs(x = "Time of Day", y = "Observation Count", fill = NULL) +
+  ggtitle("Observations in Recent 5Y vs. Preceding 5Y Far from Downtown") +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  scale_fill_manual(values = c("Recent_5Y" = "blue", "Preceding_5Y" = "red"))
+
+for (time in colnames(recent_far[, -1])) {
+  z_stat = z.test(recent_far[[time]], preced_far[[time]], sigma.x = sd(recent_far[[time]]), sigma.y = sd(preced_far[[time]]))$statistic
+  p_value = z.test(recent_far[[time]], preced_far[[time]], sigma.x = sd(recent_far[[time]]), sigma.y = sd(preced_far[[time]]))$p.value
+  
+  cat("\nZ-test for mean shootings Far from DT per month in the", time, "between recent 5Y and Preceding 5Y:\n")
+  cat("Recent 5Y Mean:", mean(recent_far[[time]]), "\n")
+  cat("Preceding 5Y Mean:", mean(preced_far[[time]]), "\n")
+  cat("Z-statistic:", z_stat, "\n")
+  cat("P-value:", p_value, "\n")
+}
+
+
+```
+
+## Conclusion & Bias
+
+It's crucial to acknowledge that biases, including recency bias influenced by media reporting, and potential biases in data collection from sources such as the NYPD, may impact this analysis. My personal bias was that there were no significant changes in NYC shootings over recent periods compared to the past. Due to the volume of recent reporting and the impact of social media, I believed that the trends in shooting remained the same, with recency bias being the main driver. I took deliberate steps to mitigate these biases by examining trends over a 10-year period, split into two 5-year blocks, and adopting a structured analytic approach.
+
+The observed association between the time of day and shooting volume underscores the presence of a strong cyclical pattern, indicating temporal dynamics in gun violence. The OLS multivariate linear regression model had an R score of 93.5% over the last 5 years and 90.5% over the preceding 5 years, showing stronger temporal relationships in recent years. The larger intercept of the model using recent data shows a higher number of shootings overall.
+
+Additionally, statistically significant shifts in the proportions of shooting victims looking at NYC as a whole, suggests the need for further investigation into the temporal and spatial relationships between frequency of shootings. However, when studying the proportions within close, medium, and far shootings, the statistical significance disappears. Aggregating shootings from all geographies could leads to a larger sample size, which in turn may increase the statistical power to detect differences in the proportions. It is important to keep in mind that if the data is not correctly geo-coded with longitude and latitude, it could mislead the results and lead to inconclusive analysis.
+
+Finally, the mean monthly shootings close to DT Manhattan had no statistically significant differences between the recent 5 year and the preceding 5 years. However, shootings medium distances and far away from DT Manhattan saw a statistically significant increase in evening and noon shootings. This raises the potential for further analysis regarding noon shootings further from downtown Manhattan. The differences in shooting volume could be driven by the varying policing and community characteristics in the various geographic area.
+
+Despite the rigorous analysis conducted, it's crucial to recognize the limitations and potential biases inherent in the data and analytic methods employed.
+
+```{r sesh_info}
+sessionInfo()
+```
