@@ -22,6 +22,14 @@ Acknowledging my personal bias that there has not been a significant change in s
 
 To study the trends over time I will compare the frequency of shooting from the most recent 5 years with the preceding 5 years (5 years before the last 5 years).
 
+Libraries Used:
+- library(dplyr)
+- library(BSDA)
+- library(tidyverse)
+- library(lubridate)
+- library(ggplot2)
+
+
 ## Importing Data
 
 Data is NYPD Shooting Incident Data (Historic), published by the City of New York and hosted on data.gov.
@@ -234,7 +242,6 @@ df$DISTANCE = cut(df$Distance_Downtown, breaks = dist_bin, labels = dist_labels,
 Starting off, lets explore with a simple "heatmap" to examine the most popular time of day and distance grouping for shooting frequency. It appears that the Night and Evening medium distance away from downtown Manhattan are the most frequent. Is that distinction between medium distance and the other distances visibile in other visualizations?
 
 ```{r heatplot}
-library(ggplot2)
 
 ggplot(df, aes(x = TIME, fill = DISTANCE)) +
   geom_bar(position = "dodge", color = "black") +
@@ -428,7 +435,6 @@ Then we will perform Z tests to identify if the mean monthly shooting average ha
 Starting with difference in proportions and mean monthly shootings for ALL distances.
 
 ```{r porportions_mean_difference}
-library(dplyr)
 library(BSDA)
 recent_group = df %>%
   filter(RECENT_FLAG == 1) %>%
