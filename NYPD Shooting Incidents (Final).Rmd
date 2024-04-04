@@ -16,7 +16,7 @@ This report aims to study the change in relationships and trends of shooting inc
 
 Is there a relationship between time of day and shooting frequency? Has that relationship changed over time? Does that relationship change based on distance?
 
-You hear it in the news and are probably told by authority figures that after a certain time of the day, you proobably want to be at home. Has that changed over the years? Has NYC seen more gun violence in the later hours of the day?
+You hear it in the news and are probably told by authority figures that after a certain time of the day, you probably want to be at home. Has that changed over the years? Has NYC seen more gun violence in the later hours of the day?
 
 Acknowledging my personal bias that there has not been a significant change in shooting frequency at each hour of the day, I will scrutinize the data from the view point of someone who wants to showcase a change in shooting frequency.
 

@@ -1,0 +1,444 @@
+---
+title: "COVID Cases and Deaths"
+output:
+  pdf_document: default
+  html_document: default
+date: "4/2/2023"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Abstract
+
+This report aims to study the seasonality patterns in COVID-19 cases and deaths in Wisconsin, USA over March 2020 to March 2023. Wisconsin was used as a proxy for a region with four seasons.
+
+Is there a relationship between time of year and case/death frequency? Does the flu season overlap with peak COVID-19 cases and deaths?
+
+COVID-19 was a pandemic that caused shock waves throughout societies and economies. Studying the relationship between month of year and correlations with the flu seasons will provide insights applicable to future flu-like illnesses.
+
+Acknowledging my personal bias that there cases and deaths reported are significantly correlated and driven by the flu season, I will scrutinize the data from the view point of someone who wants to disprove seasonality with peak COVID-19 cases and deaths.
+
+One area of potential further analysis is to compare how the seasonality had changed from 2020 to 2022, if there have been any.
+
+Libraries Use: 
+- dpylr, BSDA, tidyverse, lubridate, ggplot2
+
+## Importing Data
+
+Both data sets were automatically updated csv files (now archived and deprecated) maintained by the Center for Systems Science and Engineering (CSSE) at Johns Hopkins University.
+The last date of update was 3/9/23.
+
+Each row of the US Deaths data is a different city in a US State. Each say's death count were updated as a new column.
+
+Each row of the US Cases data is also a different city in a US State. Each day's case count was updated as a new column.
+
+```{r import}
+library(tidyverse)
+deaths_url = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
+
+confirmed_url = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+
+deaths_data = read_csv(deaths_url)
+confirmed_data = read_csv(confirmed_url)
+
+```
+
+## Tidying Data
+
+Transforming data prior to further analysis.
+
+Keeping only Wisconsin cases and deaths:
+
+```{r only_WI}
+library(dplyr)
+
+death <- deaths_data[deaths_data$Province_State == 'Wisconsin', ]
+case <- confirmed_data[confirmed_data$Province_State == 'Wisconsin', ]
+
+```
+
+Aggregating all cities within Wisconsin and joining the Case and Death columns to one main data frame:
+```{r aggregate_cities}
+# Aggregating all cities and joining cases to deaths
+
+df <- merge(
+  colSums(select(case, -1:-11)),
+  colSums(select(death, -1:-12)),
+  by = 0
+)
+colnames(df) <- c("Date", "Case", "Death")
+
+
+```
+
+Turning Date into Datetime and checking all data types:
+
+```{r datetime}
+library(lubridate)
+df$Date <- mdy(df$Date)
+
+df <- df[order(df$Date), ]
+
+```
+
+Checking missing data and how many 0 case and death days there are: 
+
+
+```{r missing_data}
+str(df)
+print('Null:')
+colSums(is.na(df))
+print('Case or Death ==0:')
+colSums(df[, c("Case", "Death")] == 0)
+
+df <- df[df$Case != 0, ]
+```
+
+Feature Engineering
+
+Create a new column for new daily cases and new daily deaths:
+Creating a month and a year column:
+
+```{r new_features}
+rownames(df) <- NULL
+df$New_Cases <- c(df$Case[1], diff(df$Case)) 
+df$New_Deaths <- c(df$Death[1], diff(df$Death))
+df$Month <- as.integer(format(df$Date, "%Y%m"))
+df$Year <- as.integer(format(df$Date, "%Y"))
+```
+
+Bringing in Flu Season and Peak Flu Season Categorical Variable:
+
+```{r flu_season}
+df$Flu <- ifelse(month(df$Date) %in% c(10, 11, 12, 1, 2, 3), 1, 0)
+df$PeakFlu <- ifelse(month(df$Date) %in% c(12, 1, 2), 1, 0)
+```
+
+Check if New_Cases and New_Deaths both have 0 as a minimum:
+- a negative daily case or death is not possible
+- fill negative daily case or death with 0
+
+
+
+```{r quality_check}
+min(df$New_Cases)
+min(df$New_Deaths)
+df[df$New_Deaths < 0, ]
+
+df$New_Deaths <- ifelse(df$New_Deaths < 0, 0, df$New_Deaths)
+
+df = df[, !(names(df) %in% c("Case", "Death"))]
+```
+
+Creating a Monthly Case and Death Summary DF
+- This will be used for further exploration in the analysis section
+- Flu and Peak Flu categorical values can be aggregate and averaged as they will all either be 0 or 1
+
+```{r month_df}
+df_month = df %>%
+  group_by(Month) %>%
+  summarise(Total_Cases = sum(New_Cases),
+            Total_Deaths = sum(New_Deaths),
+            Flu = mean(Flu),
+            PeakFlu = mean(PeakFlu))
+
+```
+
+## Visualyzing and Analyzing Data
+
+Starting off, lets take a look a the time series plot for daily cases.
+
+- Additional Question for Further Investigation: New cases seems very messy with huge spikes in 2022. To visualize better intra-year seasonality, lets try to normalize the values per year to see if there is an intra-year seasonality. For this project we will explore min max intra-year scaling.
+- New deaths seem to be better contained in a min and max range of 0 to 140. Seasonality visualization should be easier without intra-year min max scaling.
+
+```{r original_timeseries}
+library(ggplot2)
+
+ggplot(df, aes(x = Date, y = New_Cases)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Date", y = "New Cases")
+
+ggplot(df, aes(x = Date, y = New_Deaths)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Date", y = "New Deaths")
+
+```
+
+Normalizing intra-year cases to explore seasonality patterns within a calendar year.
+- Note: There may be patterns that span across calendar years (flu season) that by normalizing, we may not see.
+
+```{r normalize_intrayear}
+# Function to calculate annual min-max scaling
+annual_min_max <- function(df0, col) {
+  df <- df0
+  
+  # Calculate minimum and maximum values for each year
+  x_min <- aggregate(df[[col]], by = list(Year = df$Year), FUN = min)
+  colnames(x_min) <- c("Year", "Min")
+
+  x_max <- aggregate(df[[col]], by = list(Year = df$Year), FUN = max)
+  colnames(x_max) <- c("Year", "Max")
+
+  # Merge minimum and maximum values back into the original data frame
+  df_minmax <- merge(merge(df, x_min, by = "Year"), x_max, by = "Year")
+  
+  # Calculate scaled column
+  df_minmax[[paste0("Scaled_", col)]] <- (df_minmax[[col]] - df_minmax$Min) / (df_minmax$Max - df_minmax$Min)
+  
+  return(df_minmax)
+}
+
+df_minmax <- annual_min_max(df, "New_Cases")
+
+ggplot(df_minmax, aes(x = Date, y = Scaled_New_Cases)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Date", y = "Scaled New Cases")
+
+
+```
+
+Interesting to see spikes closer to the end of the year in 2021 and the start of 2022.
+Let's continue exploring through various models and plots.
+
+Visualize the amount of Cases and Deaths during the flu season and not during the flu season:
+
+```{r flu_counts}
+grouped_case = df %>%
+  group_by(Year, Flu) %>%
+  summarise(New_Cases = sum(New_Cases))
+
+ggplot(grouped_case, aes(x = factor(Flu), y = New_Cases, fill = factor(Year))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Flu", y = "New Cases", fill = "Year")
+
+grouped_death= df %>%
+  group_by(Year, Flu) %>%
+  summarise(New_Deaths = sum(New_Deaths))
+
+ggplot(grouped_death, aes(x = factor(Flu), y = New_Deaths, fill = factor(Year))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Flu", y = "New Deaths", fill = "Year")
+
+```
+Plotting the autocorrelation to identify seasonality lag numbers.
+- There appears to be a strong weekly seasonal pattern with spiked at intervals of 7s.
+```{r acf_plots}
+acf(df$New_Cases, lag.max = 40)
+acf(df$New_Deaths, lag.max = 40)
+
+```
+Decomposing the Season, Trend, and Residual + The variance ratio to see what % of the variances in the New Cases are explained by each component.
+
+```{r decomp_plots_cases}
+decompose_plot <- function(df, col, season) {
+  # Perform seasonal decomposition
+  result <- decompose(ts(df[[col]], frequency = season), type = 'additive')
+
+  # Create data frames for components
+  df_observed <- data.frame(Date = time(result$x), Observed = as.numeric(result$x))
+  df_seasonal <- data.frame(Date = time(result$seasonal), Seasonal = as.numeric(result$seasonal))
+  df_trend <- data.frame(Date = time(result$trend), Trend = as.numeric(result$trend))
+  df_random <- data.frame(Date = time(result$random), Random = as.numeric(result$random))
+
+  # Plot each component
+  plot_observed <- ggplot(df_observed, aes(x = Date, y = Observed)) +
+    geom_line(color = "blue") +
+    labs(title = "Observed Component") +
+    theme_minimal()
+
+  plot_seasonal <- ggplot(df_seasonal, aes(x = Date, y = Seasonal)) +
+    geom_line(color = "red") +
+    labs(title = "Seasonal Component") +
+    theme_minimal()
+
+  plot_trend <- ggplot(df_trend, aes(x = Date, y = Trend)) +
+    geom_line(color = "green") +
+    labs(title = "Trend Component") +
+    theme_minimal()
+
+  plot_random <- ggplot(df_random, aes(x = Date, y = Random)) +
+    geom_line(color = "orange") +
+    labs(title = "Random Component") +
+    theme_minimal()
+
+  # Print the plots
+  print(plot_observed)
+  print(plot_seasonal)
+  print(plot_trend)
+  print(plot_random)
+
+  # Calculate variance ratios
+  var_seasonal <- var(result$seasonal, na.rm = TRUE)
+  var_trend <- var(result$trend, na.rm = TRUE)
+  var_residual <- var(result$random, na.rm = TRUE)
+  var_original <- var(result$x, na.rm = TRUE)
+
+  var_ratio_seasonal <- var_seasonal / var_original
+  var_ratio_trend <- var_trend / var_original
+  var_ratio_residual <- var_residual / var_original
+
+  cat("Variance ratio for seasonal component:", var_ratio_seasonal, "\n")
+  cat("Variance ratio for trend component:", var_ratio_trend, "\n")
+  cat("Variance ratio for residual component:", var_ratio_residual, "\n")
+}
+
+decompose_plot(df, "New_Cases", 180)
+
+```
+
+Decomposing the Season, Trend, and Residual + The variance ratio to see what % of the variances in the New Deaths are explained by each component.
+
+```{r decomp_plots_deaths}
+decompose_plot(df, "New_Deaths", 28)
+
+
+```
+
+## Modeling
+
+Hypothesis testing 1: is there a difference in the mean daily cases during Flu season vs not during flu season?
+Result: Reject the null hypothesis, there is a difference in mean daily cases. (alpha .05)
+```{r daily_flu_case}
+library(BSDA)
+perform_z_test <- function(data, variable) {
+  sd_flu <- sd(data[[variable]][data$Flu == 1])
+  sd_non_flu <- sd(data[[variable]][data$Flu == 0])
+  
+  z_test <- z.test(x = data[[variable]][data$Flu == 1],
+                   y = data[[variable]][data$Flu == 0],
+                   sigma.x = sd_flu, sigma.y = sd_non_flu)
+  
+  cat("Mean Daily Flu Season COVID:", mean(data[[variable]][data$Flu == 1]), "\n")
+  cat("Mean Daily Non-Flu Season COVID:", mean(data[[variable]][data$Flu == 0]), "\n")
+  cat("Z-statistic:", z_test$statistic, "\n")
+  cat("P-value:", z_test$p.value, "\n")
+  
+  # Return the z-test result
+  return(z_test)
+}
+
+z_test_result <- perform_z_test(df, "New_Cases")
+
+
+```
+
+Hypothesis testing 1.2: is there a difference in the mean daily deaths during Flu season vs not during flu season?
+Result: Reject the null hypothesis, there is a difference in mean daily deaths (alpha .05)
+```{r daily_flu_death}
+z_test_result <- perform_z_test(df, "New_Deaths")
+
+
+```
+
+Hypothesis testing 2: is there a difference in the mean monthly cases during Flu season vs not during flu season?
+Result: Fail to reject the null hypothesis, there is no difference in mean monthly cases. (alpha .05)
+```{r month_flu_cases}
+perform_t_test <- function(data, variable) {
+  sd_flu <- sd(data[[variable]][data$Flu == 1])
+  sd_non_flu <- sd(data[[variable]][data$Flu == 0])
+  
+  t_test <- t.test(x = data[[variable]][data$Flu == 1],
+                   y = data[[variable]][data$Flu == 0],
+                   sigma.x = sd_flu, sigma.y = sd_non_flu)
+  
+  cat("Mean Daily Flu Season COVID:", mean(data[[variable]][data$Flu == 1]), "\n")
+  cat("Mean Daily Non-Flu Season COVID:", mean(data[[variable]][data$Flu == 0]), "\n")
+  cat("Z-statistic:", t_test$statistic, "\n")
+  cat("P-value:", t_test$p.value, "\n")
+  
+  return(t_test)
+}
+
+t_test_result <- perform_t_test(df_month, "Total_Cases")
+
+
+```
+
+Hypothesis testing 2.1: is there a difference in the mean monthly deaths during Flu season vs not during flu season?
+Result: Fail to reject the null hypothesis, there is no difference in mean monthly deaths (alpha .05)
+```{r month_flu_deaths}
+
+t_test_result <- perform_t_test(df_month, "Total_Deaths")
+```
+
+Hypothesis testing 3: is there a difference in the mean daily cases during peak Flu season vs flu season?
+Result: Fail to reject the null hypothesis, there is no difference in mean daily cases. (alpha .05)
+```{r daily_peakflu_cases}
+perform_z_test <- function(data, variable) {
+  sd_flu <- sd(data[[variable]][data$PeakFlu == 1])
+  sd_non_flu <- sd(data[[variable]][data$Flu == 1])
+  
+  z_test <- z.test(x = data[[variable]][data$PeakFlu == 1],
+                   y = data[[variable]][data$Flu == 1],
+                   sigma.x = sd_flu, sigma.y = sd_non_flu)
+  
+  cat("Mean Daily Peak Flu Season COVID:", mean(data[[variable]][data$PeakFlu == 1]), "\n")
+  cat("Mean Daily Flu Season COVID:", mean(data[[variable]][data$Flu == 1]), "\n")
+  cat("Z-statistic:", z_test$statistic, "\n")
+  cat("P-value:", z_test$p.value, "\n")
+  
+  return(z_test)
+}
+
+z_test_result <- perform_z_test(df, "New_Cases")
+
+```
+
+Hypothesis testing 3.2: is there a difference in the mean daily deaths during peak Flu season vs flu season?
+Result: Reject the null hypothesis, there is a difference in mean daily deaths (alpha .05)
+```{r daily_peakflu_deaths}
+
+z_test_result <- perform_z_test(df, "New_Deaths")
+```
+
+Hypothesis testing 4: is there a difference in the mean monthly cases during peak Flu season vs flu season?
+Result: Fail to reject the null hypothesis, there is no difference in mean monthly cases. (alpha .05)
+```{r month_peakflu_case}
+
+perform_t_test <- function(data, variable) {
+  sd_flu <- sd(data[[variable]][data$PeakFlu == 1])
+  sd_non_flu <- sd(data[[variable]][data$Flu == 1])
+  
+  t_test <- t.test(x = data[[variable]][data$PeakFlu == 1],
+                   y = data[[variable]][data$Flu == 1],
+                   sigma.x = sd_flu, sigma.y = sd_non_flu)
+  
+  cat("Mean Daily Flu Season COVID:", mean(data[[variable]][data$PeakFlu == 1]), "\n")
+  cat("Mean Daily Non-Flu Season COVID:", mean(data[[variable]][data$Flu == 1]), "\n")
+  cat("T-statistic:", t_test$statistic, "\n")
+  cat("P-value:", t_test$p.value, "\n")
+  
+  return(t_test)
+}
+
+t_test_result <- perform_t_test(df_month, "Total_Cases")
+```
+
+Hypothesis testing 4.1: is there a difference in the mean monthly deaths during peak Flu season vs flu season?
+Result: Fail to reject the null hypothesis, there is no difference in mean monthly deaths (alpha .05)
+```{r month_peakflu_deaths}
+
+t_test_result <- perform_t_test(df_month, "Total_Deaths")
+
+```
+## Conclusion & Bias
+
+Across all tests, the monthly average cases and death models using T-tests had a lower test statistic than the daily average case and death models using Z-tests.
+Due to the decreased sample size when testing the difference in means between Monthly data, the statistical power was weaker. I hypothesize that due to the smaller monthly sample size, the T-test was less likely to reject the null hypothesis even if the null hypothesis is false. The wider variability in monthly data compared to daily data could also contribute to the differences in statistical significance.
+
+The one hypothesis test where there was a statistically significant difference in monthly averages was comparing the mean deaths in flu season months to non-flu season months. The monthly average cases during flu season compared to non-flu season had a p-value of .06, due to our given alpha of .05, we failed to reject the null hypothesis. However, if alpha was .1, then the differences in monthly average cases would have also been statistically significant.
+
+Viewing the results from the daily average case and deaths, and the results from the monthly average tests, it is clear that the flu season has a significant impact on the number of cases and deaths. The peak flu seasons have a statistically significant higher average deaths than the flu season alone, however, no other tests comparing peak flu season with flu season resulted in statistical significance.
+
+As mentioned in the abstract, to counteract my personal biases regarding the impact of the flu seasons, I scrutinized the seasonality patterns using both time series decomposition and testing of means across flu seasons. The test to compare peak flu season and all flu season was an additional effort to analyze the relationships between COVID cases and deaths with the flu season. Additionally, it is important to acknowledge the bias in choosing Wisconsin as the proxy state for a geographic area with four seasons. While WI has the temperature patterns I wanted to study, it may not have had reporting accuracy or standards to ensure complete case or death information. At the beginning of COVID-19, WI may not have had the necessary systems or technology to accurately identify and report COVID-19.
+
+Across any US states, there may have also been incentives to manipulate reporting of COVID diagnoses. An interesting expansion to this study could analyze the shifts in seasonality across various years.
+
+```{r sesh_info}
+sessionInfo()
+```
