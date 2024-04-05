@@ -426,6 +426,51 @@ Result: Fail to reject the null hypothesis, there is no difference in mean month
 t_test_result <- perform_t_test(df_month, "Total_Deaths")
 
 ```
+
+Linear Model 1: is the slope between flu season = 1 and the daily cases 0? I.e., Is there no linear relationship between flu season and daily cases.
+Result: Reject the null hypothesis, the slope is not 0. (alpha .05)
+```{r daily_case_lm}
+X <- df$Flu
+Y <- df$New_Cases
+model <- lm(Y ~ X)
+
+summary(model)
+
+```
+
+Linear Model 2: is the slope between flu season = 1 and the daily deaths 0? I.e., Is there no linear relationship between flu season and daily deaths
+Result: Reject the null hypothesis, the slope is not 0. (alpha .05)
+```{r daily_death_lm}
+X <- df$Flu
+Y <- df$New_Deaths
+model <- lm(Y ~ X)
+
+summary(model)
+
+```
+
+Linear Model 3: is the slope between flu season = 1 and the monthly cases 0? I.e., Is there no linear relationship between flu season and monthly cases.
+Result: Fail to reject the null hypothesis, the slope is 0. (alpha .05)
+```{r month_case_lm}
+X <- df_month$Flu
+Y <- df_month$Total_Cases
+model <- lm(Y ~ X)
+
+summary(model)
+
+```
+
+Linear Model 4: is the slope between flu season = 1 and the monthly deaths 0? I.e., Is there no linear relationship between flu season and monthly deaths
+Result: Reject the null hypothesis, the slope is not 0. (alpha .05)
+```{r month_death_lm}
+X <- df_month$Flu
+Y <- df_month$Total_Deaths
+model <- lm(Y ~ X)
+
+summary(model)
+
+```
+
 ## Conclusion & Bias
 
 Across all tests, the monthly average cases and death models using T-tests had a lower test statistic than the daily average case and death models using Z-tests.
@@ -433,7 +478,9 @@ Due to the decreased sample size when testing the difference in means between Mo
 
 The one hypothesis test where there was a statistically significant difference in monthly averages was comparing the mean deaths in flu season months to non-flu season months. The monthly average cases during flu season compared to non-flu season had a p-value of .06, due to our given alpha of .05, we failed to reject the null hypothesis. However, if alpha was .1, then the differences in monthly average cases would have also been statistically significant.
 
-Viewing the results from the daily average case and deaths, and the results from the monthly average tests, it is clear that the flu season has a significant impact on the number of cases and deaths. The peak flu seasons have a statistically significant higher average deaths than the flu season alone, however, no other tests comparing peak flu season with flu season resulted in statistical significance.
+Upon exploring the four linear regression models, with alpha of .05, all slopes are positive and are statistically significant except for flu season and total monthly cases. The highest R-Squared value is 27% looking at monthly deaths and flu seasons.
+
+Viewing the results from the hypothesis testing and the linear regression models, it is clear that the flu season has a significant impact on the number of cases and deaths. The peak flu seasons have a statistically significant higher average deaths than the flu season alone, however, no other tests comparing peak flu season with flu season resulted in statistical significance.
 
 As mentioned in the abstract, to counteract my personal biases regarding the impact of the flu seasons, I scrutinized the seasonality patterns using both time series decomposition and testing of means across flu seasons. The test to compare peak flu season and all flu season was an additional effort to analyze the relationships between COVID cases and deaths with the flu season. Additionally, it is important to acknowledge the bias in choosing Wisconsin as the proxy state for a geographic area with four seasons. While WI has the temperature patterns I wanted to study, it may not have had reporting accuracy or standards to ensure complete case or death information. At the beginning of COVID-19, WI may not have had the necessary systems or technology to accurately identify and report COVID-19.
 
